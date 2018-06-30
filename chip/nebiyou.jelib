@@ -1,0 +1,24 @@
+# header information:
+Hnebiyou|9.01
+
+# Views:
+Vlayout|lay
+
+# Cell play;1{lay}
+Cplay;1{lay}||mocmos|1525281892426|1525281994541||DRC_last_good_drc_area_date()G1525281987130|DRC_last_good_drc_bit()I18|DRC_last_good_drc_date()G1525281987130
+Ngeneric:Facet-Center|art@0||0|0||||AV
+NMetal-1-Metal-2-Con|contact@0||14|0||||
+NMetal-1-Metal-2-Con|contact@1||14|-7||||
+NMetal-1-Pin|pin@0||0|0||||
+NMetal-1-Pin|pin@1||40|0||||
+NMetal-1-Pin|pin@2||14|0||||
+NMetal-1-Pin|pin@3||0|-7||||
+NMetal-1-Pin|pin@4||40|-7||||
+NMetal-1-Pin|pin@5||14|-7||||
+AMetal-1|net@1|||S1800|pin@0||0|0|pin@2||14|0
+AMetal-1|net@2|||S1800|pin@2||14|0|pin@1||40|0
+AMetal-1|net@3|||S2700|pin@2||14|0|contact@0||14|0
+AMetal-1|net@4|||S1800|pin@3||0|-7|pin@5||14|-7
+AMetal-1|net@5|||S1800|pin@5||14|-7|pin@4||40|-7
+AMetal-1|net@6|||S2700|pin@5||14|-7|contact@1||14|-7
+X
