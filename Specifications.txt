@@ -1,0 +1,300 @@
+THE SHA-2/256 PROJECT - SPECIFICATIONS
+[Revision 3: April 27, 2018]
+
+Architects:
+  Bryan Bailey, Braden H. Becker, Kevin Chang, John E. Ferguson,
+  Jason S. Hansel, Tanner M. Love, Nebiyou Y. Metaferia, Nathaniel M. Perry,
+  Riwaz Poudyal, and Alexander F. Smith-Bove
+
+CONTENTS:
+ 1. OVERVIEW and MOTIVATION
+ 2. HASH CORE ARCHITECTURE
+ 3. OPERATION GUIDELINES
+ 4. BUDGETING and FLOORPLANNING
+
+1. OVERVIEW and MOTIVATION
+
+The SHA-2/256 Hashing Core is an ASIC implementation of the SHA-2 algorithm
+for developing 256-bit hash digests of a message M.  This algorithm is heavily
+used in encryption, signing of files, and proof-of-work verification for
+BitCoin currency mining.  Once a message has been assembled, it is passed
+through the core in byte-serial fashion and the digest is produced later,
+again in byte-serial order.
+
+Phase 1 - Message processing
+The essence of the algorithm is to take a message, M, which has been extended
+to include (1) a 1 bit, (2) 1-512 zero bits, and (3) a 64-bit unsigned
+representation of the length of the message M, in bits.  After extension, the
+message is a multiple of 512 bits long or a multiple of 16 32-bit unsigned
+integers.  This padding is necessary, as the algorithm consumes the message
+512-bits at a time.
+
+Phase 2 - Message expansion
+The algorithm then takes the initial 512 bits and expands it to a "schedule"
+of 64 32-bit words.
+
+Phase 3 - Message compression
+From this schedule, the 64 32-bit words are then fed into a compression loop
+that, mixes each 32-bit value, W, with 8 32-bit developing hashes (A-H)
+and a position-dependent constant, K.
+
+Phase 4 - Digest formation
+After the message has been compressed, the "message digest" is offloaded from
+the running hash registers, H in big-endian order from H[0] to H[7].
+
+This project assumes that the message fed to the machine has already been
+padded to its full length; that is phase 1 is computed off-line. The bytes
+of this message are fed to the circuit as a stream. Later, the digest is
+delivered as a stream of bytes, but in reverse order (*).
+3. HASH CORE ARCHITECTURE.
+
+Our hash core consists of five units.
+
+ * The CONTROL unit is responsible for determining the timing of events within
+   the chip.  It reacts to inputs from off-chip and, at specific times, it 
+   activates control lines for the other four units.
+ * The INPUT/OUTPUT unit is responsible for packing/unpacking bytes
+   arriving-from/headed-to  off chip.
+ * The STORE unit is responsible for supporting the storage of 74 32-bit values
+   essential to the algorithm.  64 of these are read-only K values, and 8 are
+   read-write hash registers.
+ * The EXPANSION unit is responsible for developing 48 32-bit values, W[16:64],
+   from every 16 32-bit value read from the message into W[0:15].
+ * The COMPRESSION unit is responsible for computing a deterministic hash
+   of every unsigned W[i], mixing it into the running hash digest.
+
+General notes:
+ * All bits are numbered from the least signficant bit upward.
+ * All registers, here, are edge triggered, but will be implemented with
+   non-overlapping clock signals (e.g. C and CB, or MC and MCB) to drive the
+   flip-flops.  This will allow us to overcome clock skew and timing issues.
+ * Not all offchip signals are completely determined here.  These will be
+   hashed out in the Control Group and will not generally impact other groups.
+ * Exact timing is still to be determined and, in particular, some pipelining
+   of chunk manipulation is possible
+
+I. CONTROL MODULE [Architects: Riwaz + Tanner]
+This module is responsible for choreographing the various events that take
+place during the hash.  It consists of a timing counter whose individual
+bits determine the sequence of operations.
+
+ 0. We use a 10 bit counter, driven by CLK, initialized by the rising
+    edge of MSG.  The lowest 3 bits (the mini-counter) are used to sequence events within
+    the pipeline stages.  The upper 7 bits describe an "event time" from 0
+    through to 79.
+ 1. On rising MSG, an INIT flip flop is set.  It is cleared by the pipe cycle
+    (C).
+ 2. READY is a flip-flop set by (MSG and event time 0).   It is cleared
+    on (C and event time 15).  IREADY is when READY and even minicycles.
+ 3. If INIT and minicycle 4, we perform the following
+      * Asynchronously init the HSH registers
+      * Asynchronously init the compression pipeline
+ 4. The shift ir (SIR) is high during even minicycles and READY.
+ 5. The cycle clock (C) occurs during minicounter 7.  It:
+      * Clears INIT
+      * Advances pipes.
+      * Rotates constants.
+ 6. CM and EM are flip-flops set when event time 16.
+ 7. EM is cleared at event time 64.
+ 8. EM and CM are cleared at event time 0.
+ 9. When event time is less than 8, UPDATE is asserted, causing
+    HN <- HQ+H.
+ 10. When not UPDATE, HN<-HQ.
+ 11. LOR is (C and UPDATE and not MSG)
+ 12. SOR occurs when not MSG and event time is between 1 and 9 (inclusive)
+     and odd minicycles.
+ 12.5 OREADY occurs when not MSG, and event time is between 1 and 9 (inclusive)
+     and even minicycles.
+ 13. KA is event time minus 16.  Alternatively, we have a counter, KA that we
+     reset at time 15 and increment on C.
+ 
+
+EXPORTS:
+ INPUTS:
+   MSG (was START), CLK,
+ OUTPUTS (driven):
+   READY,
+   SIR, LOR, SOR (I/O Module),
+   CH (ROM Module),
+   EM (Expansion Module),
+   CC, CM (Compression Module)
+   C (ROM, Expansion and Compression Modules)
+ RESPONSIBLE FOR STATE:
+   Cycle clock and all control lines derived from that
+
+II. INPUT and OUTPUT MODULE [Architects: Bryan + Jack]
+This module is reponsible for coordinating external data transfer.
+At the beginning of the hashing algorithm, it consumes bytes (8-bit) that
+appear on inputs D0..7, and left shifts them, 8-bits at a time, into a 32-bit
+Input Register (IR).  At the end of the hashing algorihtm, it shifts bytes
+from the 32-bit Output Register (OR), presenting them on the exports Q0..7.
+
+  1. The input register (IR) is a 32-bit byte-serial shift register.  On Shift
+     IR (SIR), the register shifts with IR24..31 receiving IR16..23,
+     IR16..23 receiving IR8..15, IR8..15 receiving IR0..7 and IR0..7 receiving
+     D0..7.  Register values are always presented as IR0..31.
+  2. The output register (OR) is a 32-bit register that shifts out values
+     through Q0..7.  On Load OR (LOR) the register captures all 32 bits from
+     Output Register Data (ORD), ORD0..32.  OR0..7 present the low byte of
+     data as exports Q0..7.
+     On Shift OR (SOR) the register shifts by bytes with OR0..7
+     receiving OR8..15, OR8..15 receiving OR16..23, and OR16..23 receiving
+     OR24..OR31.  Notice that this register will have to have a 24-bit MUX
+     on the input.
+
+EXPORTS:
+ CONTROLS (INPUTS):
+   SIR, LOR, SOR
+ INPUTS:
+   D[0..7], IR[0..31]
+ OUTPUTS (driven):
+   Q[0..7]
+ RESPONSIBLE FOR STATE:
+   IR[0..31], OR[0..31]
+   
+III. STORE MODULE [Architects: Kevin + Jason]
+This module is responsible for organizing two sets of 32-bit values:
+H[0..7] and K[0..63].
+   1. The K is a 64x32 bit ROM that contains the fractional parts of the
+      cube roots of the first 64 primes (2..311):
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, // 2,3,5,7
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, // 11,13,17,19
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, // 23,29,31,37
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, // 41,43,47,53
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, // 59,61,67,71
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, // 73,79,83,89
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, // 97,101,103,107
+  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, // 109,113,127,131
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, // 137,139,149,151
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, // 157,163,167,173
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, // 179,181,191,193
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, // 197,199,211,223
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, // 227,229,233,239
+  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, // 241,251,257,263
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, // 269,271,277,281
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2  // 283,293,307,311
+      At any time the K Address (KA[5..0]) indexes this array and the
+      resulting value is presented as K Output (KO[0..31]).
+    2. H is a collection of 8 32-bit registers, H0..7, arranged linearly.
+       On Clear H (CH) these registers load their repective square roots
+       of the first 8 primes.
+  0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a, // 2,3,5,7
+  0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19, // 11,13,17,19
+       The output (Q) bits of H0 are connected to the data lines (D) of H1, and
+       the output bits of H1 are connected to the data lines of H2, etc.
+       H7s outputs appears as exports HQ[0..31]. Next H (NH[0..31])
+       is imported and fed to the inputs of H0.
+       On rising Cycle (C) these registers load from their
+       respective data lines.
+    
+EXPORTS:
+ CONTROLS (INPUTS):
+   CH, C
+ INPUTS:
+   HA[0..3], KA[0..5], NH[0..31]
+ OUTPUTS (driven):
+   HQ[0..31], KQ[0..31]
+ RESPONSIBLE FOR STATE:
+   H(8x32 REGISTERS), K(64x32 ROM)
+
+IV. EXPANSION MODULE [Architects: Nebiyou + Alex ]
+This module is a 16-stage pipeline that maintains the context for computing
+a single 32-bit unsigned word in W[32..63].  During the beginning of the
+processing of a chunk of data, it receives, sequentially, 16 words from
+the Input Register (IR).  It then switches to Expansion Mode (EM) and begins
+to compute the next word in the expansion, WI, based on values from W[i-16],
+W[i-15], W[i-7], and W[i-2].  As this value enters the pipeline, the word
+W[i-16] exits.  48 words are computed and then it uses the next 16 cycles
+to flush the data from the array.  Overlapping this flushing, the next
+chunk enters the pipeline.
+
+The WI calculation is
+ s0 := (W1 ror 7) xor (W1 ror 18) xor (W1 lsr 3)
+ s1 := (W14 ror 17) xor (W14 ror 19) xor (W14 lsr 10)
+ WI := W0 + s0 + W9 + s1
+Notice that the sum bit of a full adder computes the xor of 3 values.
+  1. This module consists primarily of 16 32-bit registers, W15..W0.
+     W15's Q lines feed into W14's data lines, W14's Q lines into W13's D,
+     etc. until W1's Q lines feed into W0's D lines.  The output of E0 is
+     exported as the 32 bit value W[0..31].
+  2. The calculation of WI, above, is constantly computed, based on the
+     values currently found in W0, W1, W9, and W14.
+  3. W15 loads from either WI (if EM) or import IR.  All registers load
+     on Cycle (C).
+
+EXPORTS:
+ CONTROLS (INPUTS):
+   EM, C
+ INPUTS:
+   IR[0..31]
+ OUTPUTS (driven):
+   W[0..31]
+ RESPONSIBLE FOR STATE:
+   16 Pipeline Expansion Stages
+
+V. COMPRESSION MODULE [Architects: Braden + Nathan ]
+This module is a 8-stage pipeline that accumulates the next hash update.
+The stages of this pipeline are called A, B, C, D, E, F, G, and H.
+During the 8 time steps *before* W[0] enters the pipeline, the current
+hash constants are fed into the pipeline.  At that point, the value
+leaving the expansion pipe is used to compute TEMP1 and TEMP2.  TEMP1+TEMP2
+is presented to the A stage, and D + TEMP1 is presented to E. After W[63]
+initializes A (and modifies E), the values exiting H are paired with and
+accumulated with H7, H6, H5, ..., H0.  As the last chunk exits, these values
+are strobed out, as well.
+
+   1. The Pipeline consists of 8 register stages, A,B,C,D,E,F,G, and H.
+      Each register loads its values from inputs "D", and present them to
+      Q.  The output of A goes into B, B into C, C into D, E into F
+      F, into G, G into H.
+   2. At all times, the following computation is performed:
+        S1 := (e ror 6) xor (e ror 11) xor (e ror 25)
+        ch := (e and f) xor ((not e) and g)
+        TA := h + S1 + ch + KQ + WI
+        S0 := (a ror 2) xor (a ror 13) xor (a ror 22)
+        maj := (a and b) xor (a and c) xor (b and c)
+        TB := S0 + maj
+      As with the observation above, xor of three values is the sum bit of
+      a full adder.  Maj is computed as the carry of a full adder
+      working on A, B, and C.
+      CH is a mux of G (E=0) and F (E=1) controlled by E.
+   2. E is loaded with D+TA if CM, else D.(Use And gates on TA side of
+      adder.)
+   3. If CM NH <= HQ (this unit does not modify hash).
+      If not CM, NH = HQ + H. 
+   4. A is loaded with TA+TB during compression mode (CM), otherwise from
+      Next H (NH).
+   5. On Clear Compression (CC), each of these registers is set to zero.
+   6. On rising Cycle (C) each of these registers loads its input.
+   
+EXPORTS:
+ CONTROLS (INPUTS):
+   C, CC, CM
+ INPUTS:
+   WI[0..31], KQ[0..31], HQ[0..31]
+ OUTPUTS (driven):
+   NH[31..0] 
+ RESPONSIBLE FOR STATE:
+   8 Pipeline compression stages.
+
+4. OPERATION GUIDELINES
+
+The SHA-2 Hash Core is a 14-pin chip.
+   * VDD - power
+   * gnd - ground
+   * CLK - (Input) externally driven clock
+   * MSG - (I) initialize chip and start receiving message
+   * READY - (Output) chip will read byte from d0..7 on MSG and CLK, or
+           - chip will describe digest byte on q0..7 on (not MSG) and CLK
+
+Typical use:
+  User drives clock consistently.
+  1. User raises MSG.
+  2. User waits for READY and presents data on next CLK (for 65 cycles).
+  3. READY lowers for (48*4=192 cycles), user lowers MSG if no more MSG
+     chunks are to be provided.
+  4. If MSG high, goto 2.
+  5. Is MSG low, user waits for READY and receives data on next CLK
+     (repeated 32 times.)
+  6. READY is lowered, logically returning to state 0.
+
